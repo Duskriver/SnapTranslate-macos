@@ -1,5 +1,7 @@
 # SnapTranslate · 轻译
 
+Linux 原生版见 [SnapTranslate-linux](https://github.com/Duskriver/SnapTranslate-linux)。
+
 一个只做截屏翻译的原生 macOS 菜单栏应用。默认按 **⌥⇧T**（可自定义），框选区域，将截图交给 DeepSeek，译文显示在小浮窗中。默认目标语言为简体中文。
 
 Swift + AppKit，使用 Swift 官方 swift-markdown 解析 Markdown；优先控制待机资源占用，不包含历史记录、本地 OCR、自动更新或模型选择。
@@ -12,7 +14,7 @@ SnapTranslate 是独立开源项目，**不是 DeepSeek 官方客户端**，与 
 
 ## 下载
 
-在 [GitHub Releases](https://github.com/Duskriver/SnapTranslate/releases) 下载 DMG 安装包。目前提供 **macOS 14 或更高版本、Apple Silicon（arm64）** 的预编译版本，不适用于 Intel Mac。双击 DMG，将窗口左侧的 `SnapTranslate.app` 拖入右侧的 `Applications` 文件夹；复制完成后弹出磁盘映像，从「应用程序」打开应用。使用需要自己的 DeepSeek API Key。
+在 [GitHub Releases](https://github.com/Duskriver/SnapTranslate-macos/releases) 下载 DMG 安装包。目前提供 **macOS 14 或更高版本、Apple Silicon（arm64）** 的预编译版本，不适用于 Intel Mac。双击 DMG，将窗口左侧的 `SnapTranslate.app` 拖入右侧的 `Applications` 文件夹；复制完成后弹出磁盘映像，从「应用程序」打开应用。使用需要自己的 DeepSeek API Key。
 
 当前下载包使用固定的本机自签名，**尚无 Apple Developer ID 签名或 Apple 公证**。macOS 可能拦截首次启动；确认来源和完整性后，可按 [Apple 的说明](https://support.apple.com/zh-cn/102445) 在「系统设置 → 隐私与安全性」选择「仍要打开」。不需要关闭系统的安全检查。
 
@@ -27,8 +29,8 @@ shasum -a 256 -c SHA256SUMS
 需要 **macOS 14 或更高版本**、**Xcode 16 或更新版本提供的 Swift 6 工具链**。构建脚本生成本机架构的应用，不生成通用二进制。
 
 ```sh
-git clone https://github.com/Duskriver/SnapTranslate.git
-cd SnapTranslate
+git clone https://github.com/Duskriver/SnapTranslate-macos.git
+cd SnapTranslate-macos
 swift test
 ./scripts/setup-signing.sh # 本机首次构建时执行一次
 ./scripts/build.sh
