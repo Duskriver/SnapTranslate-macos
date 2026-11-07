@@ -131,6 +131,29 @@ extension AppKitTests {
             #expect(text.string == "新译文")
         }
 
+        @Test func copyingATableSelectionKeepsColumnsAndRichText() throws {
+            let (controller, text, _) = try makeController()
+            defer { controller.dismiss() }
+            controller.append(delta: "| A | B | C |\n| --- | --- | --- |\n| Left&#10;Line | | Right |")
+            controller.finish()
+            let pasteboard = NSPasteboard.withUniqueName()
+            defer { pasteboard.releaseGlobally() }
+            let source = text.string as NSString
+
+            for (selection, expected) in [
+                ("Left\nLine\n\nRight", "Left\nLine  |    |  Right"),
+                ("Left\nLine\n", "Left\nLine"),
+                ("Left\n", "Left\n"),
+            ] {
+                let range = source.range(of: selection)
+                try #require(range.location != NSNotFound)
+                text.setSelectedRange(range)
+                #expect(text.writeSelection(to: pasteboard, types: text.writablePasteboardTypes))
+                #expect(pasteboard.string(forType: .string) == expected)
+                #expect(pasteboard.data(forType: .rtf) != nil)
+            }
+        }
+
         private func makeController() throws -> (ResultPanelController, NSTextView, [NSView]) {
             _ = NSApplication.shared
             let controller = ResultPanelController()

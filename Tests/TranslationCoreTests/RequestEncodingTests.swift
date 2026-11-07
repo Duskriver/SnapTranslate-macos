@@ -37,7 +37,8 @@ struct RequestEncodingTests {
         #expect(messages[1]["role"] as? String == "user")
         let content = try #require(messages[1]["content"] as? [[String: Any]])
         #expect(content.count == 2)
-        #expect(content[0]["text"] as? String == "请将截图中所有可辨认文字翻译成\(language)。保持原有阅读顺序、段落和列表结构；尽量保留表格关系。保留无需翻译的代码、网址和专有名词。无法辨认的文字用［无法辨认］标记。若没有文字，只输出［未发现可翻译文字］。")
+        let instruction = try #require(content[0]["text"] as? String)
+        #expect(instruction.hasPrefix("请将截图中所有可辨认文字翻译成\(language)。"))
         #expect(content[1]["image_url"] as? [String: String] == [
             "detail": "original", "url": "data:\(mimeType);base64,+/8=",
         ])

@@ -42,8 +42,8 @@ struct MarkdownRendererTests {
     }
 
     @Test func nestedListsHaveHangingIndentationAndRespectStartingNumber() throws {
-        let result = MarkdownRenderer().render("- outer **bold**\n\n  continuation\n\n  7. nested\n  8. next\n- sibling")
-        #expect(result.string == "•\touter bold\ncontinuation\n7.\tnested\n8.\tnext\n•\tsibling")
+        let result = MarkdownRenderer().render("- outer **bold**\n\n  continuation\n\n  7) nested\n  12) next\n- sibling")
+        #expect(result.string == "•\touter bold\n\ncontinuation\n7)\tnested\n12)\tnext\n•\tsibling")
         let outer = try paragraph(in: result, at: "outer")
         let continuation = try paragraph(in: result, at: "continuation")
         let nested = try paragraph(in: result, at: "nested")
@@ -81,6 +81,13 @@ struct MarkdownRendererTests {
         #expect(MarkdownRenderer().render("first  \nsecond").string == "first\nsecond")
     }
 
+    @Test func paragraphsStaySeparateFromExplicitLineBreaks() throws {
+        let result = MarkdownRenderer().render("第一行  \n**第二行**\n\n下一段")
+        #expect(result.string == "第一行\n第二行\n\n下一段")
+        #expect(try paragraph(in: result, at: "第一行").paragraphSpacing < paragraph(in: result, at: "第二行").paragraphSpacing)
+        #expect(try font(in: result, at: "第二行").fontDescriptor.symbolicTraits.contains(.bold))
+    }
+
     @Test func linksImagesAndHTMLStayNative() throws {
         let result = MarkdownRenderer().render("[**网站**](https://example.com) [unsafe](javascript:alert) ![图片说明](https://example.com/image.png) <b>literal</b>")
         #expect(result.string == "网站 unsafe 图片说明 <b>literal</b>")
@@ -92,18 +99,47 @@ struct MarkdownRendererTests {
         #expect(MarkdownRenderer().render(html).string == html)
     }
 
-    @Test func tableFallbackKeepsCellAndRowBoundaries() throws {
-        let result = MarkdownRenderer().render("| 名称 | 值 |\n| --- | --- |\n| **加粗** | `code` |")
-        #expect(result.string == "名称  |  值\n加粗  |  code")
+    @Test func tableUsesNativeCellsWithOriginalAlignmentAndInlineStyles() throws {
+        let result = MarkdownRenderer().render("""
+            ## 标题
+
+            | 名称 | 说明 | 值 |
+            | :--- | :---: | ---: |
+            | **加粗** | `code` | 42 |
+
+            后续正文
+            """)
+        #expect(result.string == "标题\n名称\n说明\n值\n加粗\ncode\n42\n后续正文")
+        #expect(MarkdownRenderer.plainText(from: result) == "标题\n名称  |  说明  |  值\n加粗  |  code  |  42\n后续正文")
+        let label = try paragraph(in: result, at: "名称")
+        let description = try paragraph(in: result, at: "code")
+        let value = try paragraph(in: result, at: "42")
+        #expect(label.alignment == .left)
+        #expect(description.alignment == .center)
+        #expect(value.alignment == .right)
+        let labelCell = try #require(label.textBlocks.first as? NSTextTableBlock)
+        let valueCell = try #require(value.textBlocks.first as? NSTextTableBlock)
+        #expect(labelCell.table === valueCell.table)
+        #expect(labelCell.table.numberOfColumns == 3)
+        #expect(labelCell.startingRow == 0 && labelCell.startingColumn == 0)
+        #expect(valueCell.startingRow == 1 && valueCell.startingColumn == 2)
+        #expect(try paragraph(in: result, at: "后续正文").textBlocks.isEmpty)
         #expect(try font(in: result, at: "名称").fontDescriptor.symbolicTraits.contains(.bold))
+        #expect(try font(in: result, at: "加粗").fontDescriptor.symbolicTraits.contains(.bold))
         #expect(try font(in: result, at: "code").fontDescriptor.symbolicTraits.contains(.monoSpace))
     }
 
-    @Test func tableFallbackPreservesEmptyCells() {
+    @Test func tablePreservesEmptyCellsAndPlainTextRows() throws {
         let source = "| | Middle | |\n| --- | --- | --- |\n| left | | right |\n| | | |\n| | last | |"
-        #expect(MarkdownRenderer().render(source).string == "  |  Middle  |  \nleft  |    |  right\n  |    |  \n  |  last  |  ")
-        #expect(MarkdownRenderer().render("| |\n| --- |\n| value |\n| |\n| last |").string == "\nvalue\n\nlast")
-        #expect(MarkdownRenderer().render("| Header |\n| --- |").string == "Header")
+        let result = MarkdownRenderer().render(source)
+        let empty = try #require(result.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        let cell = try #require(empty.textBlocks.first as? NSTextTableBlock)
+        #expect(cell.startingRow == 0 && cell.startingColumn == 0)
+        #expect(MarkdownRenderer.plainText(from: result) == "  |  Middle  |  \nleft  |    |  right\n  |    |  \n  |  last  |  ")
+        let singleColumn = MarkdownRenderer().render("| |\n| --- |\n| value |\n| |\n| last |")
+        #expect(MarkdownRenderer.plainText(from: singleColumn) == "\nvalue\n\nlast")
+        let headerOnly = MarkdownRenderer().render("| Header |\n| --- |")
+        #expect(MarkdownRenderer.plainText(from: headerOnly) == "Header")
     }
 
     private func attribute(_ key: NSAttributedString.Key, in result: NSAttributedString, at substring: String) throws -> Any? {

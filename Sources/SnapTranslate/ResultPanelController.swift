@@ -8,7 +8,7 @@ final class ResultPanelController: NSWindowController, NSWindowDelegate {
     var onOpenSettings: (() -> Void)?
     var onOpenScreenRecordingSettings: (() -> Void)?
 
-    private let textView = NSTextView(frame: .zero)
+    private let textView = ResultTextView(frame: .zero)
     private let scrollView = ResultScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
@@ -57,6 +57,7 @@ final class ResultPanelController: NSWindowController, NSWindowDelegate {
         markdownSource = ""
         isMarkdownRendered = false
         textView.string = ""
+        scrollView.minimumTableWidth = 0
         copyButton.isEnabled = false
         copyButton.title = "复制译文"
         setRecoveryAction(nil)
@@ -82,6 +83,7 @@ final class ResultPanelController: NSWindowController, NSWindowDelegate {
             // A resumed stream returns to plain incremental display until its
             // next finish; normal streaming never rewrites accumulated text.
             storage.setAttributedString(NSAttributedString(string: markdownSource, attributes: textAttributes))
+            scrollView.minimumTableWidth = 0
         }
         isMarkdownRendered = false
         markdownSource.append(delta)
@@ -136,12 +138,24 @@ final class ResultPanelController: NSWindowController, NSWindowDelegate {
             let shouldFollow = scrollView.contentView.bounds.maxY >= textView.bounds.height - 40
             let origin = scrollView.contentView.bounds.origin
             let rendered = MarkdownRenderer().render(markdownSource)
+            var minimumTableWidth: CGFloat = 0
+            rendered.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: rendered.length)) { value, _, _ in
+                if let cell = (value as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock,
+                   let table = cell.table as? ResultTextTable {
+                    minimumTableWidth = max(minimumTableWidth, table.minimumLayoutWidth)
+                }
+            }
+            if minimumTableWidth > 0 { textView.useTableLayout() }
+            scrollView.minimumTableWidth = minimumTableWidth
             textView.textStorage?.setAttributedString(rendered)
             isMarkdownRendered = true
             if shouldFollow {
                 textView.scrollRangeToVisible(NSRange(location: rendered.length, length: 0))
-            } else {
-                scrollView.contentView.scroll(to: origin)
+            }
+            let y = shouldFollow ? scrollView.contentView.bounds.minY : origin.y
+            let target = NSPoint(x: origin.x, y: y)
+            if scrollView.contentView.bounds.origin != target {
+                scrollView.contentView.scroll(to: target)
                 scrollView.reflectScrolledClipView(scrollView.contentView)
             }
         }
@@ -310,6 +324,7 @@ final class ResultPanelController: NSWindowController, NSWindowDelegate {
         presentationIsActive = false
         stopProgress()
         textView.string = ""
+        scrollView.minimumTableWidth = 0
         statusLabel.stringValue = ""
         statusLabel.toolTip = nil
         statusLabel.setAccessibilityHelp(nil)
@@ -327,9 +342,10 @@ final class ResultPanelController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func copyTranslation() {
-        guard presentationIsActive, hasTranslatedText else { return }
+        guard presentationIsActive, hasTranslatedText, let storage = textView.textStorage else { return }
+        let translation = isMarkdownRendered ? MarkdownRenderer.plainText(from: storage) : storage.string
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(textView.string, forType: .string)
+        NSPasteboard.general.setString(translation, forType: .string)
         if isDisplayingError {
             // Keep the incomplete warning and its full error explanation.
             copyButton.title = "已复制"
@@ -354,21 +370,65 @@ final class ResultPanelController: NSWindowController, NSWindowDelegate {
     }
 }
 
-/// Keep the document fitted to the actual viewport, including scroller changes.
-/// Hiding the horizontal scroller alone does not constrain the document width.
 @MainActor
 private final class ResultScrollView: NSScrollView {
+    var minimumTableWidth: CGFloat = 0 {
+        didSet {
+            if minimumTableWidth != oldValue { tile() }
+        }
+    }
+
     override func tile() {
         super.tile()
         guard let textView = documentView as? NSTextView, contentSize.width > 0 else { return }
-        if textView.frame.width != contentSize.width {
-            textView.setFrameSize(NSSize(width: contentSize.width, height: textView.frame.height))
+        let insets = 2 * textView.textContainerInset.width
+        let minimumDocumentWidth = minimumTableWidth > 0
+            ? minimumTableWidth + insets + 2 * (textView.textContainer?.lineFragmentPadding ?? 0)
+            : 0
+        let needsHorizontalScroll = minimumDocumentWidth > contentSize.width
+        if hasHorizontalScroller != needsHorizontalScroll {
+            hasHorizontalScroller = needsHorizontalScroll
+            super.tile()
         }
-        // A previous scroll-to-caret or resize may have left a horizontal offset.
-        if contentView.bounds.minX != 0 {
-            contentView.scroll(to: NSPoint(x: 0, y: contentView.bounds.minY))
+        let viewportWidth = contentSize.width
+        let documentWidth = max(viewportWidth, minimumDocumentWidth)
+        let container = textView.textContainer as? ResultTextContainer
+        container?.viewportWidth = max(0, viewportWidth - insets)
+        if textView.frame.width != documentWidth {
+            textView.setFrameSize(NSSize(width: documentWidth, height: textView.frame.height))
+        }
+        // Preserve the horizontal position while the table still overflows.
+        let origin = contentView.bounds.origin
+        let x = min(max(0, origin.x), documentWidth - viewportWidth)
+        if x != origin.x {
+            contentView.scroll(to: NSPoint(x: x, y: origin.y))
             reflectScrolledClipView(contentView)
         }
+    }
+}
+
+@MainActor
+private final class ResultTextView: NSTextView {
+    func useTableLayout() {
+        guard !(textContainer is ResultTextContainer) else { return }
+        // AppKit lays out text tables with TextKit 1. Switch before replacing
+        // the container so streaming and prose-only results can use TextKit 2.
+        _ = layoutManager
+        guard let original = textContainer else { return }
+        let container = ResultTextContainer(size: original.size)
+        container.lineFragmentPadding = original.lineFragmentPadding
+        container.widthTracksTextView = true
+        replaceTextContainer(container)
+    }
+
+    override func writeSelection(to pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        // NSTextView also requests the legacy plain-text type for Command-C.
+        let isPlainText = type == .string || type.rawValue == "NSStringPboardType"
+        guard isPlainText, let storage = textStorage, selectedRange().length > 0 else {
+            return super.writeSelection(to: pasteboard, type: type)
+        }
+        let translation = selectedRanges.map { MarkdownRenderer.plainText(from: storage, in: $0.rangeValue) }.joined()
+        return pasteboard.setString(translation, forType: type)
     }
 }
 
