@@ -329,7 +329,7 @@ private struct AttributedStringVisitor: MarkupVisitor {
         grid.layoutAlgorithm = .fixedLayoutAlgorithm
         grid.collapsesBorders = true
         grid.hidesEmptyCells = false
-        grid.setWidth(indent, type: .absolute, for: .margin, edge: .minX)
+        grid.setWidth(indent, type: .absoluteValueType, for: .margin, edge: .minX)
         let alignments = table.columnAlignments.map { alignment -> NSTextAlignment in
             switch alignment {
             case .left: .left
@@ -350,9 +350,9 @@ private struct AttributedStringVisitor: MarkupVisitor {
             for column in 0..<columnCount {
                 let content = cells.next().map { children(of: $0) } ?? NSMutableAttributedString(string: "")
                 let cell = NSTextTableBlock(table: grid, startingRow: rowIndex, rowSpan: 1, startingColumn: column, columnSpan: 1)
-                cell.setWidth(0.5, type: .absolute, for: .border)
+                cell.setWidth(0.5, type: .absoluteValueType, for: .border)
                 cell.setBorderColor(.separatorColor)
-                cell.setWidth(padding, type: .absolute, for: .padding)
+                cell.setWidth(padding, type: .absoluteValueType, for: .padding)
                 if isHeader { cell.backgroundColor = .quaternaryLabelColor }
                 let style = NSMutableParagraphStyle()
                 style.alignment = alignments[column]
