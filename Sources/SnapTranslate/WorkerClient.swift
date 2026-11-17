@@ -8,6 +8,7 @@ final class WorkerClient {
     private var session: Session?
     private let makeProcess: () throws -> WorkerProcess
     var isRetiring: Bool { session?.closing == true }
+    var workerPID: Int32? { session?.process.processID }
 
     init(makeProcess: @escaping () throws -> WorkerProcess = {
         guard let executable = Bundle.main.executableURL else { throw TranslationError.invalidResponse }

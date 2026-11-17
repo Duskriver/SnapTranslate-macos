@@ -29,6 +29,7 @@ final class WorkerProcess: @unchecked Sendable {
     }
 
     var isRunning: Bool { lock.withLock { started && process.isRunning } }
+    var processID: Int32? { lock.withLock { started && process.isRunning ? process.processIdentifier : nil } }
 
     func cancel() {
         lock.withLock {
@@ -50,7 +51,7 @@ final class WorkerProcess: @unchecked Sendable {
 
     func send<Value: Encodable>(_ value: Value) throws {
         var data = try JSONEncoder().encode(value)
-        guard data.count <= 16 * 1024 else { throw TranslationError.invalidResponse }
+        guard data.count <= 16 * 1024 * 1024 else { throw TranslationError.invalidResponse }
         data.append(10)
         let frame = data
         writer.async { [self] in

@@ -12,6 +12,8 @@ enum TranslationWorker {
         let parentPID: Int32
         let apiKey: String
         let language: String
+        var imageData: Data? = nil
+        var imageMimeType: String? = nil
     }
 
     enum Command: Codable, Sendable {
@@ -57,8 +59,17 @@ enum TranslationWorker {
         guard let display = region.screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
             throw CaptureError.missingDisplay
         }
+        let image: CapturedImage?
+        if let snapshot = region.snapshot {
+            image = try await PNGEncoder.shared.encode(snapshot)
+            await delivery.onCaptureComplete()
+            try Task.checkCancellation()
+        } else {
+            image = nil
+        }
         let request = Request(rect: region.rect, displayID: display.uint32Value,
-                              parentPID: getpid(), apiKey: apiKey, language: language)
+                              parentPID: getpid(), apiKey: apiKey, language: language,
+                              imageData: image?.data, imageMimeType: image?.mimeType)
         try await WorkerClient.shared.translate(request, delivery: delivery)
     }
 
@@ -106,7 +117,7 @@ enum TranslationWorker {
         AsyncThrowingStream { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    var decoder = WorkerLineDecoder<Command>(limit: 16 * 1024)
+                    var decoder = WorkerLineDecoder<Command>(limit: 16 * 1024 * 1024)
                     while let data = try readWorkerChunk(.standardInput, capacity: 4096) {
                         for command in try decoder.append(data) { continuation.yield(command) }
                     }
@@ -175,13 +186,18 @@ final class WorkerWindowServer: NSObject, NSApplicationDelegate {
                                    onDelta: @escaping @Sendable (String) async -> Void,
                                    onCaptured: () -> Void = {}) async throws {
         let image: CapturedImage
-        do {
-            image = try await ScreenCapture.capture(
-                SelectedRegion(rect: request.rect, screen: screen),
-                excludingProcessIDs: [request.parentPID, getpid()]
-            )
-        } catch { onCaptured(); throw error }
-        onCaptured()
+        if let imageData = request.imageData, let mimeType = request.imageMimeType {
+            image = CapturedImage(data: imageData, mimeType: mimeType)
+            onCaptured()
+        } else {
+            do {
+                image = try await ScreenCapture.capture(
+                    SelectedRegion(rect: request.rect, screen: screen),
+                    excludingProcessIDs: [request.parentPID, getpid()]
+                )
+            } catch { onCaptured(); throw error }
+            onCaptured()
+        }
         // Capture before waiting on network admission. A slow API response must
         // not defer reading the user's selected page until its content changes.
         let admission = WorkerNetworkAdmission.shared

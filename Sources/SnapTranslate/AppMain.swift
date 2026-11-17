@@ -21,12 +21,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let selector: RegionSelector
     private let pipeline: TranslationPipeline
     private let capturePermission: () -> Bool
+    private let captureScreens: (@MainActor () async throws -> [UInt32: CGImage])?
     private let makeResultPanel: () -> ResultPanelController
     private let makeSettings: (SettingsStore, GlobalHotKey) -> any SettingsPresenting
     private var statusItem: NSStatusItem?
     private var captureMenuItems: [NSMenuItem] = []
     private(set) var settingsController: (any SettingsPresenting)?
     private var settingsTransition: Task<Void, Never>?
+    private var preCaptureTask: Task<Void, Never>?
     private var capturingRequests: Set<UUID> = []
     private var wantsSettingsAfterCapture = false
     private(set) var resultController: ResultPanelController?
@@ -43,6 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         capturePermission: @escaping () -> Bool = {
             CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
         },
+        captureScreens: (@MainActor () async throws -> [UInt32: CGImage])? = {
+            var excluded: Set<Int32> = [ProcessInfo.processInfo.processIdentifier]
+            if let workerPID = WorkerClient.shared.workerPID { excluded.insert(workerPID) }
+            return try await ScreenCapture.captureScreens(excludingProcessIDs: excluded)
+        },
         makeResultPanel: @escaping () -> ResultPanelController = { ResultPanelController() },
         makeSettings: @escaping (SettingsStore, GlobalHotKey) -> any SettingsPresenting = {
             SettingsProcessController(store: $0, hotKey: $1)
@@ -53,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.selector = selector
         self.pipeline = pipeline
         self.capturePermission = capturePermission
+        self.captureScreens = captureScreens
         self.makeResultPanel = makeResultPanel
         self.makeSettings = makeSettings
         super.init()
@@ -85,6 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wantsSettingsAfterCapture = false
         settingsTransition?.cancel()
         settingsTransition = nil
+        preCaptureTask?.cancel()
+        preCaptureTask = nil
         hotKey.onPress = nil
         cancelTranslation()
         selector.cancel()
@@ -149,6 +159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showSettings() {
         guard !isTerminating else { return }
         settingsTransition?.cancel()
+        preCaptureTask?.cancel()
+        preCaptureTask = nil
         selector.cancel()
         // A settings child launched after a capture's window snapshot would not
         // be in that snapshot's process exclusions. Wait until pixels are read.
@@ -202,6 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             afterSettingsClose(controller) { $0.beginCapture() }
             return
         }
+        if let preCaptureTask {
+            preCaptureTask.cancel()
+            self.preCaptureTask = nil
+            return
+        }
         if selector.isSelecting { selector.cancel(); return }
         let key: String
         do { key = try settings.loadAPIKey() }
@@ -215,9 +232,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resultController?.dismiss()
         guard ensureCapturePermission() else { return }
         let language = settings.targetLanguage
-        selector.begin { [weak self] region in
-            guard let self, let region else { return }
-            self.translate(region, apiKey: key, language: language)
+        if let captureScreens {
+            preCaptureTask = Task { @MainActor [weak self] in
+                do {
+                    let snapshots = try await captureScreens()
+                    guard !Task.isCancelled, let self, !self.isTerminating else { return }
+                    self.preCaptureTask = nil
+                    self.selector.begin(snapshots: snapshots) { [weak self] region in
+                        guard let self, let region else { return }
+                        self.translate(region, apiKey: key, language: language)
+                    }
+                } catch {
+                    guard !Task.isCancelled, let self, !self.isTerminating else { return }
+                    self.preCaptureTask = nil
+                    self.resultPanel().showLoading()
+                    self.resultController?.showError(error)
+                }
+            }
+        } else {
+            selector.begin { [weak self] region in
+                guard let self, let region else { return }
+                self.translate(region, apiKey: key, language: language)
+            }
         }
     }
 

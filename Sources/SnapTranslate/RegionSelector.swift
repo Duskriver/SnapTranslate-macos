@@ -4,9 +4,18 @@ import QuartzCore
 struct SelectedRegion {
     let rect: NSRect
     let screen: NSScreen
+    let snapshot: CGImage?
+
+    init(rect: NSRect, screen: NSScreen, snapshot: CGImage? = nil) {
+        self.rect = rect
+        self.screen = screen
+        self.snapshot = snapshot
+    }
 }
 
-/// Transparent overlays contain no screenshot textures and exist only during selection.
+/// Overlays display pre-captured screen snapshots (when provided) during
+/// selection so hover tooltips and popovers remain visible, and release them
+/// immediately when selection finishes or is cancelled.
 @MainActor
 final class RegionSelector {
     private let notificationCenter: NotificationCenter
@@ -20,27 +29,31 @@ final class RegionSelector {
         self.notificationCenter = notificationCenter
     }
 
-    func begin(completion: @escaping (SelectedRegion?) -> Void) {
+    func begin(snapshots: [UInt32: CGImage] = [:], completion: @escaping (SelectedRegion?) -> Void) {
         cancel()
         self.completion = completion
         for screen in NSScreen.screens {
+            let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+            let snapshot = displayID.flatMap { snapshots[$0] }
             let panel = SelectionPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.title = "选择翻译区域"
             panel.isReleasedWhenClosed = false
-            panel.isOpaque = false
-            panel.backgroundColor = .clear
+            panel.colorSpace = screen.colorSpace
+            panel.isOpaque = snapshot != nil
+            panel.backgroundColor = snapshot != nil ? .black : .clear
             panel.hasShadow = false
             panel.level = .screenSaver
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             panel.hidesOnDeactivate = false
             panel.isFloatingPanel = true
-            let view = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            let view = SelectionView(frame: NSRect(origin: .zero, size: screen.frame.size), snapshot: snapshot)
             view.setAccessibilityElement(true)
             view.setAccessibilityLabel("拖动选择翻译区域，按 Esc 取消")
             view.onSelection = { [weak self, weak screen] rect in
                 guard let screen else { self?.cancel(); return }
                 let global = rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
-                self?.finish(SelectedRegion(rect: global, screen: screen))
+                let cropped = snapshot.flatMap { try? ScreenCapture.crop($0, rect: global, on: screen) }
+                self?.finish(SelectedRegion(rect: global, screen: screen, snapshot: cropped))
             }
             view.onCancel = { [weak self] in self?.cancel() }
             panel.contentView = view
@@ -70,8 +83,11 @@ final class RegionSelector {
         if let screenObserver { notificationCenter.removeObserver(screenObserver) }
         self.screenObserver = nil
         for panel in panels {
-            (panel.contentView as? SelectionView)?.onSelection = nil
-            (panel.contentView as? SelectionView)?.onCancel = nil
+            if let view = panel.contentView as? SelectionView {
+                view.onSelection = nil
+                view.onCancel = nil
+                view.clearSnapshot()
+            }
             panel.orderOut(nil)
             panel.close()
             panel.contentView = nil
@@ -93,6 +109,7 @@ final class SelectionView: NSView {
     var onCancel: (() -> Void)?
     private var start: NSPoint?
     private var selection: NSRect = .zero
+    private let backdropLayer = CALayer()
     private let dimLayer = CAShapeLayer()
     private let borderLayer = CAShapeLayer()
     private let hintBackground = CALayer()
@@ -103,7 +120,7 @@ final class SelectionView: NSView {
     // A drag must start on any display, even when another overlay is key.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, snapshot: CGImage? = nil) {
         let title = NSAttributedString(
             string: "拖动选择翻译区域 · Esc 取消",
             attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.white]
@@ -118,6 +135,8 @@ final class SelectionView: NSView {
         root.isGeometryFlipped = false
         layer = root
         wantsLayer = true
+        backdropLayer.contents = snapshot
+        backdropLayer.contentsGravity = .resize
         dimLayer.fillColor = NSColor.black.withAlphaComponent(0.22).cgColor
         dimLayer.fillRule = .evenOdd
         borderLayer.fillColor = nil
@@ -127,11 +146,16 @@ final class SelectionView: NSView {
         hintBackground.cornerRadius = 12
         hintText.string = title
         hintText.alignmentMode = .center
+        root.addSublayer(backdropLayer)
         root.addSublayer(dimLayer)
         root.addSublayer(borderLayer)
         root.addSublayer(hintBackground)
         hintBackground.addSublayer(hintText)
         updateLayers()
+    }
+
+    func clearSnapshot() {
+        backdropLayer.contents = nil
     }
 
     required init?(coder: NSCoder) { nil }
@@ -190,9 +214,10 @@ final class SelectionView: NSView {
         defer { CATransaction.commit() }
 
         let scale = window?.backingScaleFactor ?? 1
-        for current in [root, dimLayer, borderLayer, hintBackground, hintText] {
+        for current in [root, backdropLayer, dimLayer, borderLayer, hintBackground, hintText] {
             current.contentsScale = scale
         }
+        backdropLayer.frame = bounds
         dimLayer.frame = bounds
         borderLayer.frame = bounds
         let dim = CGMutablePath()

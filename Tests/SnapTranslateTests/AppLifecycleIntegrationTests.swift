@@ -277,6 +277,43 @@ extension AppKitTests {
             defer { replacement.unregister() }
             try replacement.register(fixture.store.captureShortcut)
         }
+
+        @Test func preCaptureRunsBeforeSelectionPanelAppearsAndSecondPressCancels() async throws {
+            var captureStarted = false
+            var sawPanelDuringCapture = false
+            var releaseCapture: CheckedContinuation<[UInt32: CGImage], any Error>?
+            let fixture = try LifecycleFixture(captureScreensOverride: {
+                captureStarted = true
+                sawPanelDuringCapture = NSApp.windows.contains { $0 is SelectionPanel }
+                return try await withCheckedThrowingContinuation { releaseCapture = $0 }
+            })
+            defer {
+                releaseCapture?.resume(throwing: CancellationError())
+                fixture.cleanUp()
+            }
+
+            fixture.app?.beginCapture()
+            try await eventually { captureStarted }
+            #expect(!sawPanelDuringCapture)
+            #expect(!fixture.selector.isSelecting)
+
+            // Pressing the shortcut again during pre-capture cancels without showing overlays.
+            fixture.app?.beginCapture()
+            releaseCapture?.resume(returning: [:])
+            releaseCapture = nil
+            try await Task.sleep(for: .milliseconds(30))
+            #expect(!fixture.selector.isSelecting)
+
+            // Normal completion opens the selection overlay after pre-capture finishes.
+            captureStarted = false
+            fixture.app?.beginCapture()
+            try await eventually { captureStarted }
+            #expect(!sawPanelDuringCapture)
+            releaseCapture?.resume(returning: [:])
+            releaseCapture = nil
+            try await eventually { fixture.selector.isSelecting }
+            for window in NSApp.windows where window is SelectionPanel { window.alphaValue = 0 }
+        }
     }
 }
 
@@ -301,6 +338,7 @@ private final class LifecycleFixture {
     var selectionWindows: [WeakReference<NSWindow>] = []
 
     init(pipelineOverride: TranslationPipeline? = nil,
+         captureScreensOverride: (@MainActor () async throws -> [UInt32: CGImage])? = nil,
          makeSettingsOverride: ((SettingsStore, GlobalHotKey) -> any SettingsPresenting)? = nil) throws {
         _ = NSApplication.shared
         defaults = try #require(UserDefaults(suiteName: suite))
@@ -316,6 +354,7 @@ private final class LifecycleFixture {
                 translate: { _, _, _, onDelta in try await probe.translate(onDelta: onDelta) }
             ),
             capturePermission: { true },
+            captureScreens: captureScreensOverride,
             makeResultPanel: {
                 let panel = ResultPanelController()
                 panel.window?.alphaValue = 0
